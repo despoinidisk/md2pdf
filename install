@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Installer for md2pdf.
+#
+#   curl -fsSL https://work.github.com/despoinidisk/md2pdf/raw/main/install | bash
+#
+# Overrides:
+#   MD2PDF_BASE_URL  directory containing md2pdf and requirements.txt
+#   MD2PDF_BIN_DIR   installation directory (default: /usr/local/bin or ~/.local/bin)
+#   MD2PDF_SKIP_DEPS set to 1 to skip Python/npm dependency installation
+
+set -euo pipefail
+
+BASE_URL="${MD2PDF_BASE_URL:-https://work.github.com/despoinidisk/md2pdf/raw/main}"
+BIN_DIR="${MD2PDF_BIN_DIR:-}"
+SKIP_DEPS="${MD2PDF_SKIP_DEPS:-0}"
+
+log() { printf '%s\n' "$*" >&2; }
+die() { log "install.sh: $*"; exit 1; }
+
+fetch() {
+    local url="$1" destination="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 "$url" -o "$destination"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$destination" "$url"
+    else
+        die "curl or wget is required to download files"
+    fi
+}
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+if [[ -z "$BIN_DIR" ]]; then
+    if [[ -w /usr/local/bin ]]; then
+        BIN_DIR=/usr/local/bin
+    else
+        BIN_DIR="$HOME/.local/bin"
+    fi
+fi
+mkdir -p "$BIN_DIR"
+
+log "Downloading md2pdf..."
+fetch "$BASE_URL/md2pdf" "$TMP_DIR/md2pdf"
+if ! head -n 1 "$TMP_DIR/md2pdf" | grep -q '^#!/usr/bin/env python3'; then
+    die "downloaded md2pdf does not look like a valid script"
+fi
+chmod +x "$TMP_DIR/md2pdf"
+mv "$TMP_DIR/md2pdf" "$BIN_DIR/md2pdf"
+log "Installed md2pdf to $BIN_DIR/md2pdf"
+
+install_python_deps() {
+    local python pip_args=()
+    python="$(command -v python3 || true)"
+    if [[ -z "$python" ]]; then
+        log "python3 not found; install markdown and weasyprint manually"
+        return 0
+    fi
+    if ! "$python" -m pip --version >/dev/null 2>&1; then
+        log "pip not found; install markdown and weasyprint manually"
+        return 0
+    fi
+
+    log "Installing Python dependencies..."
+    if ! fetch "$BASE_URL/requirements.txt" "$TMP_DIR/requirements.txt"; then
+        log "Could not download requirements.txt; skipping Python dependencies"
+        return 0
+    fi
+    if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+        pip_args+=(--user)
+    fi
+    if "$python" -m pip install --quiet --upgrade "${pip_args[@]}" \
+        -r "$TMP_DIR/requirements.txt"; then
+        log "Python dependencies installed"
+    else
+        log "Could not install Python dependencies automatically."
+        log "Run: python3 -m pip install markdown weasyprint"
+    fi
+}
+
+install_mermaid_cli() {
+    if command -v mmdc >/dev/null 2>&1; then
+        log "mermaid-cli already installed"
+        return 0
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        log "npm not found; Mermaid diagrams will require:"
+        log "  npm install -g @mermaid-js/mermaid-cli"
+        return 0
+    fi
+
+    log "Installing mermaid-cli..."
+    if npm install -g @mermaid-js/mermaid-cli; then
+        log "mermaid-cli installed"
+    else
+        log "Could not install mermaid-cli automatically. Run:"
+        log "  npm install -g @mermaid-js/mermaid-cli"
+    fi
+}
+
+if [[ "$SKIP_DEPS" != "1" ]]; then
+    install_python_deps
+    install_mermaid_cli
+fi
+
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) log "Note: add $BIN_DIR to your PATH to use 'md2pdf'" ;;
+esac
+
+if "$BIN_DIR/md2pdf" --help >/dev/null 2>&1; then
+    log "Done. Try: md2pdf --help"
+else
+    log "Installed, but a dependency is missing; check the messages above."
+fi

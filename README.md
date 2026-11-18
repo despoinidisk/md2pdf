@@ -16,13 +16,27 @@ same name and a `.pdf` extension, unless another path is given.
 
 ## Install
 
+One-line install (downloads the CLI and installs Python/npm dependencies):
+
+```sh
+curl -fsSL https://github.com/despoinidisk/md2pdf/raw/main/install | bash
+```
+
+By default the script is installed to `/usr/local/bin` when writable, otherwise
+to `~/.local/bin`. Override with `MD2PDF_BIN_DIR`. To skip dependency
+installation, set `MD2PDF_SKIP_DEPS=1`. If the repository location differs, set
+`MD2PDF_BASE_URL` to the directory containing `md2pdf` and `requirements.txt`.
+
+Manual install:
+
 ```sh
 python3 -m pip install -r requirements.txt
 chmod +x md2pdf
 ```
 
 Mermaid diagrams (fenced with ` ```mermaid `) are rendered to PNG and embedded in
-the PDF, so `mmdc` from mermaid-cli must be available on `PATH`:
+the PDF, so `mmdc` from mermaid-cli must be available on `PATH`. The installer
+tries to install it automatically; otherwise:
 
 ```sh
 npm install -g @mermaid-js/mermaid-cli
