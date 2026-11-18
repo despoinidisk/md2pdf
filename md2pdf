@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
@@ -21,6 +22,12 @@ MERMAID_FENCE = re.compile(
     r"^(?P=fence)[ \t]*$",
     re.MULTILINE | re.DOTALL,
 )
+
+@dataclass(frozen=True)
+class RenderedDiagram:
+    png: Path
+    svg: Path | None = None
+
 
 CSS = """
 @page {
@@ -86,8 +93,32 @@ figure.mermaid img { max-width: 100%; }
 """
 
 
-def render_mermaid(markdown_text: str, work_dir: Path) -> tuple[str, dict[str, Path]]:
-    """Render Mermaid fences to PNGs, replacing them with placeholder tokens."""
+def run_mmdc(
+    mmdc: str,
+    source: Path,
+    destination: Path,
+    number: int,
+    scale: int | None = None,
+) -> None:
+    """Render one diagram file with mermaid-cli."""
+    command = [mmdc, "-i", str(source), "-o", str(destination), "-b", "transparent"]
+    if scale is not None:
+        command.extend(["-s", str(scale)])
+    command.append("-q")
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0 or not destination.exists():
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(
+            f"could not render Mermaid diagram {number} as "
+            f"{destination.suffix.lstrip('.')}: {detail}"
+        )
+
+
+def render_mermaid(
+    markdown_text: str, work_dir: Path, need_svg: bool = False
+) -> tuple[str, dict[str, RenderedDiagram]]:
+    """Render Mermaid fences to PNG (and optionally SVG), replacing them with tokens."""
     blocks = list(MERMAID_FENCE.finditer(markdown_text))
     if not blocks:
         return markdown_text, {}
@@ -99,66 +130,61 @@ def render_mermaid(markdown_text: str, work_dir: Path) -> tuple[str, dict[str, P
             "Install it with: npm install -g @mermaid-js/mermaid-cli"
         )
 
-    images: dict[str, Path] = {}
+    diagrams: dict[str, RenderedDiagram] = {}
     parts: list[str] = []
     end = 0
 
     for index, block in enumerate(blocks):
         source = work_dir / f"diagram-{index}.mmd"
-        destination = work_dir / f"diagram-{index}.png"
+        png = work_dir / f"diagram-{index}.png"
         source.write_text(block.group("diagram"), encoding="utf-8")
 
-        result = subprocess.run(
-            [
-                mmdc,
-                "-i", str(source),
-                "-o", str(destination),
-                "-b", "transparent",
-                "-s", "2",
-                "-q",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 or not destination.exists():
-            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-            raise RuntimeError(f"could not render Mermaid diagram {index + 1}: {detail}")
+        run_mmdc(mmdc, source, png, index + 1, scale=2)
+        svg = work_dir / f"diagram-{index}.svg" if need_svg else None
+        if svg is not None:
+            run_mmdc(mmdc, source, svg, index + 1)
 
         token = f"MD2PDFMERMAID{index}TOKEN"
         parts.append(markdown_text[end:block.start()])
         parts.append(f"\n\n{token}\n\n")
-        images[token] = destination
+        diagrams[token] = RenderedDiagram(png=png, svg=svg)
         end = block.end()
 
     parts.append(markdown_text[end:])
-    return "".join(parts), images
+    return "".join(parts), diagrams
 
 
-def markdown_to_html(markdown_text: str, images: dict[str, Path]) -> str:
+def markdown_to_html(
+    markdown_text: str, diagrams: dict[str, RenderedDiagram]
+) -> str:
     """Convert Markdown to an HTML fragment and insert rendered diagrams."""
     html_body = markdown.markdown(
         markdown_text,
         extensions=["tables", "fenced_code", "sane_lists"],
     )
-    for token, image in images.items():
+    for token, diagram in diagrams.items():
         figure = (
             '<figure class="mermaid">'
-            f'<img src="{escape(image.as_uri(), quote=True)}" alt="Mermaid diagram">'
+            f'<img src="{escape(diagram.png.as_uri(), quote=True)}" alt="Mermaid diagram">'
             "</figure>"
         )
         html_body = html_body.replace(f"<p>{token}</p>", figure).replace(token, figure)
     return html_body
 
 
-def export_diagrams(images: dict[str, Path], output_path: Path) -> Path | None:
-    """Copy rendered diagrams into <pdf-stem>-diagrams/ beside the PDF."""
-    if not images:
+def export_diagrams(
+    diagrams: dict[str, RenderedDiagram], output_path: Path
+) -> Path | None:
+    """Copy rendered PNG and SVG files into <pdf-stem>-diagrams/ beside the PDF."""
+    if not diagrams:
         return None
 
     directory = output_path.parent / f"{output_path.stem}-diagrams"
     directory.mkdir(parents=True, exist_ok=True)
-    for index, image in enumerate(images.values(), start=1):
-        shutil.copy2(image, directory / f"diagram-{index}.png")
+    for index, diagram in enumerate(diagrams.values(), start=1):
+        shutil.copy2(diagram.png, directory / f"diagram-{index}.png")
+        if diagram.svg is not None:
+            shutil.copy2(diagram.svg, directory / f"diagram-{index}.svg")
     return directory
 
 
@@ -206,15 +232,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         markdown_text = input_path.read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory(prefix="md2pdf-") as temp_dir:
-            prepared_markdown, images = render_mermaid(markdown_text, Path(temp_dir))
-            html_body = markdown_to_html(prepared_markdown, images)
+            prepared_markdown, diagrams = render_mermaid(
+                markdown_text, Path(temp_dir), need_svg=args.export_diagrams
+            )
+            html_body = markdown_to_html(prepared_markdown, diagrams)
             html_document = build_html(html_body, input_path.stem)
             HTML(
                 string=html_document,
                 base_url=str(input_path.absolute().parent),
             ).write_pdf(str(output_path))
             diagram_dir = (
-                export_diagrams(images, output_path) if args.export_diagrams else None
+                export_diagrams(diagrams, output_path) if args.export_diagrams else None
             )
     except Exception as exc:
         print(f"md2pdf: error: {exc}", file=sys.stderr)

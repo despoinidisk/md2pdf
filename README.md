@@ -11,7 +11,7 @@ same name and a `.pdf` extension, unless another path is given.
 ./md2pdf path/to/report.md --export-diagrams
 ```
 
-`--export-diagrams` also saves the rendered diagrams as PNG files in
+`--export-diagrams` also saves each rendered diagram as both PNG and SVG in
 `path/to/report-diagrams/` (next to the PDF).
 
 ## Install
