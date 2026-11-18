@@ -8,7 +8,11 @@ same name and a `.pdf` extension, unless another path is given.
 ```sh
 ./md2pdf path/to/report.md
 ./md2pdf path/to/report.md -o path/to/custom.pdf
+./md2pdf path/to/report.md --export-diagrams
 ```
+
+`--export-diagrams` also saves the rendered diagrams as PNG files in
+`path/to/report-diagrams/` (next to the PDF).
 
 ## Install
 

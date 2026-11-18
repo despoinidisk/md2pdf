@@ -150,6 +150,18 @@ def markdown_to_html(markdown_text: str, images: dict[str, Path]) -> str:
     return html_body
 
 
+def export_diagrams(images: dict[str, Path], output_path: Path) -> Path | None:
+    """Copy rendered diagrams into <pdf-stem>-diagrams/ beside the PDF."""
+    if not images:
+        return None
+
+    directory = output_path.parent / f"{output_path.stem}-diagrams"
+    directory.mkdir(parents=True, exist_ok=True)
+    for index, image in enumerate(images.values(), start=1):
+        shutil.copy2(image, directory / f"diagram-{index}.png")
+    return directory
+
+
 def build_html(html_body: str, title: str) -> str:
     return f"""<!DOCTYPE html>
 <html>
@@ -175,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="PDF path (default: input path with a .pdf extension)",
     )
+    parser.add_argument(
+        "--export-diagrams",
+        action="store_true",
+        help="also save diagrams to <pdf-name>-diagrams/ beside the PDF",
+    )
     args = parser.parse_args(argv)
 
     input_path = args.input
@@ -196,11 +213,16 @@ def main(argv: list[str] | None = None) -> int:
                 string=html_document,
                 base_url=str(input_path.absolute().parent),
             ).write_pdf(str(output_path))
+            diagram_dir = (
+                export_diagrams(images, output_path) if args.export_diagrams else None
+            )
     except Exception as exc:
         print(f"md2pdf: error: {exc}", file=sys.stderr)
         return 1
 
     print(f"PDF written to {output_path}")
+    if diagram_dir is not None:
+        print(f"Diagrams written to {diagram_dir}")
     return 0
 
 
