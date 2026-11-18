@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installer for md2pdf.
 #
-#   curl -fsSL https://work.github.com/despoinidisk/md2pdf/raw/main/install | bash
+#   curl -fsSL https://github.com/despoinidisk/md2pdf/raw/main/install | bash
 #
 # Overrides:
 #   MD2PDF_BASE_URL  directory containing md2pdf and requirements.txt
@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-BASE_URL="${MD2PDF_BASE_URL:-https://work.github.com/despoinidisk/md2pdf/raw/main}"
+BASE_URL="${MD2PDF_BASE_URL:-https://github.com/despoinidisk/md2pdf/raw/main}"
 BIN_DIR="${MD2PDF_BIN_DIR:-}"
 SKIP_DEPS="${MD2PDF_SKIP_DEPS:-0}"
 
