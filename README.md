@@ -14,12 +14,29 @@ same name and a `.pdf` extension, unless another path is given.
 `--export-diagrams` also saves each rendered diagram as both PNG and SVG in
 `path/to/report-diagrams/` (next to the PDF).
 
-Diagrams are scaled down if needed to fit the page height. For tall flowcharts,
-`--diagram-direction LR` lays them out left-to-right for a shorter, wider
-footprint (less downscaling in the PDF):
+Diagrams are scaled down if needed to fit the page height. For diagrams that
+support it (flowcharts, state, class and ER diagrams), `--diagram-direction LR`
+lays them out left-to-right for a shorter, wider footprint (less downscaling in
+the PDF):
 
 ```sh
 ./md2pdf path/to/report.md --diagram-direction LR
+```
+
+Diagram types without a direction setting (for example sequence diagrams) are
+left as authored by Mermaid.
+
+`--square-layout` renders each diagram in both TB and LR and keeps whichever
+aspect ratio is closer to 1:1. This changes the actual Mermaid layout, but it is
+best-effort: Mermaid's layout engine decides the shape, so a long chain still
+cannot become truly square without rewriting the diagram source.
+
+`--pad-square` is a purely cosmetic alternative: it pads the shorter axis with
+transparent space so the canvas is square. It does not rearrange the diagram.
+
+```sh
+./md2pdf path/to/report.md --square-layout
+./md2pdf path/to/report.md --pad-square --export-diagrams
 ```
 
 ## Install

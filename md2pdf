@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import shutil
 import subprocess
@@ -14,14 +15,18 @@ from html import escape
 from pathlib import Path
 
 import markdown
+from PIL import Image
 from weasyprint import HTML
 
 FLOWCHART_HEADER = re.compile(
-    r"^([ \t]*)(graph|flowchart)(?:[ \t]+(?:TD|TB|BT|RL))?[ \t]*$",
+    r"^([ \t]*)(graph|flowchart)(?:[ \t]+(?:TD|TB|BT|LR|RL))?[ \t]*$",
     re.MULTILINE,
 )
 FLOWCHART_DIRECTION = re.compile(
-    r"^([ \t]*)direction[ \t]+(?:TD|TB|BT|RL)\b", re.MULTILINE
+    r"^([ \t]*)direction[ \t]+(?:TD|TB|BT|LR|RL)\b", re.MULTILINE
+)
+DIRECTIONAL_DIAGRAM = re.compile(
+    r"^(stateDiagram(?:-v2)?|classDiagram|erDiagram)[ \t]*$", re.MULTILINE
 )
 
 MERMAID_FENCE = re.compile(
@@ -109,20 +114,29 @@ figure.mermaid img {
 """
 
 
-def apply_direction(diagram: str, direction: str) -> str:
-    """Optionally lay flowcharts out left-to-right for a shorter footprint."""
-    if direction == "TB":
-        return diagram
+def set_direction(diagram: str, direction: str) -> str:
+    """Force a supported diagram's layout direction."""
     diagram = FLOWCHART_HEADER.sub(
         lambda match: f"{match.group(1)}{match.group(2)} {direction}",
         diagram,
         count=1,
     )
-    return FLOWCHART_DIRECTION.sub(
+    diagram = FLOWCHART_DIRECTION.sub(
         lambda match: f"{match.group(1)}direction {direction}",
         diagram,
-        count=1,
     )
+
+    def inject(match: re.Match[str]) -> str:
+        if re.search(r"^[ \t]*direction\b", diagram, re.MULTILINE):
+            return match.group(0)
+        return f"{match.group(0)}\ndirection {direction}"
+
+    return DIRECTIONAL_DIAGRAM.sub(inject, diagram, count=1)
+
+
+def apply_direction(diagram: str, direction: str) -> str:
+    """Leave TB alone; rewrite the source for LR."""
+    return diagram if direction == "TB" else set_direction(diagram, direction)
 
 
 def run_mmdc(
@@ -152,6 +166,7 @@ def render_mermaid(
     work_dir: Path,
     need_svg: bool = False,
     direction: str = "TB",
+    square_layout: bool = False,
 ) -> tuple[str, dict[str, RenderedDiagram]]:
     """Render Mermaid fences to PNG (and optionally SVG), replacing them with tokens."""
     blocks = list(MERMAID_FENCE.finditer(markdown_text))
@@ -170,14 +185,30 @@ def render_mermaid(
     end = 0
 
     for index, block in enumerate(blocks):
-        source = work_dir / f"diagram-{index}.mmd"
-        png = work_dir / f"diagram-{index}.png"
-        source.write_text(
-            apply_direction(block.group("diagram"), direction), encoding="utf-8"
-        )
+        original = block.group("diagram")
+        if square_layout:
+            candidates = [
+                ("tb", set_direction(original, "TB")),
+                ("lr", set_direction(original, "LR")),
+            ]
+        else:
+            candidates = [("main", apply_direction(original, direction))]
 
-        run_mmdc(mmdc, source, png, index + 1, scale=2)
-        svg = work_dir / f"diagram-{index}.svg" if need_svg else None
+        best: tuple[float, Path, Path] | None = None
+        for label, text in candidates:
+            source = work_dir / f"diagram-{index}-{label}.mmd"
+            png = work_dir / f"diagram-{index}-{label}.png"
+            source.write_text(text, encoding="utf-8")
+            run_mmdc(mmdc, source, png, index + 1, scale=2)
+            with Image.open(png) as image:
+                width, height = image.size
+            score = abs(math.log(width / height))
+            if best is None or score < best[0]:
+                best = (score, source, png)
+
+        assert best is not None
+        source, png = best[1], best[2]
+        svg = work_dir / f"diagram-{index}-svg.svg" if need_svg else None
         if svg is not None:
             run_mmdc(mmdc, source, svg, index + 1)
 
@@ -189,6 +220,66 @@ def render_mermaid(
 
     parts.append(markdown_text[end:])
     return "".join(parts), diagrams
+
+
+def square_png(path: Path, destination: Path) -> Path:
+    """Pad a PNG to a transparent square canvas without distorting it."""
+    with Image.open(path) as image:
+        width, height = image.size
+        side = max(width, height)
+        canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        canvas.paste(
+            image.convert("RGBA"),
+            ((side - width) // 2, (side - height) // 2),
+        )
+        canvas.save(destination)
+    return destination
+
+
+def square_svg(path: Path, destination: Path) -> Path:
+    """Expand an SVG viewBox to a square canvas without distorting it."""
+    content = path.read_text(encoding="utf-8")
+    tag_match = re.search(r"<svg\b[^>]*>", content)
+    if tag_match is None:
+        return path
+
+    tag = tag_match.group(0)
+    viewbox_match = re.search(r'viewBox="([^"]+)"', tag)
+    if viewbox_match is None:
+        return path
+
+    values = re.split(r"[\s,]+", viewbox_match.group(1).strip())
+    if len(values) != 4:
+        return path
+    x, y, width, height = (float(value) for value in values)
+    side = max(width, height)
+    new_viewbox = (
+        f"{x + (width - side) / 2:g} {y + (height - side) / 2:g} "
+        f"{side:g} {side:g}"
+    )
+
+    new_tag = tag.replace(
+        f'viewBox="{viewbox_match.group(1)}"',
+        f'viewBox="{new_viewbox}"',
+    )
+    new_tag = re.sub(r"max-width:\s*[\d.]+px", f"max-width: {side:g}px", new_tag)
+    new_tag = re.sub(r'\bwidth="[\d.]+"', f'width="{side:g}"', new_tag)
+    new_tag = re.sub(r'\bheight="[\d.]+"', f'height="{side:g}"', new_tag)
+
+    destination.write_text(
+        content[:tag_match.start()] + new_tag + content[tag_match.end():],
+        encoding="utf-8",
+    )
+    return destination
+
+
+def make_square(diagram: RenderedDiagram, work_dir: Path, index: int) -> RenderedDiagram:
+    """Pad a rendered diagram's PNG (and SVG, if present) to square canvases."""
+    png = square_png(diagram.png, work_dir / f"diagram-{index}-square.png")
+    svg = None
+    if diagram.svg is not None:
+        svg = square_svg(diagram.svg, work_dir / f"diagram-{index}-square.svg")
+    return RenderedDiagram(png=png, svg=svg)
 
 
 def markdown_to_html(
@@ -255,11 +346,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also save diagrams to <pdf-name>-diagrams/ beside the PDF",
     )
-    parser.add_argument(
+    layout = parser.add_mutually_exclusive_group()
+    layout.add_argument(
         "--diagram-direction",
         choices=["TB", "LR"],
         default="TB",
         help="flowchart layout (LR makes tall diagrams shorter and wider)",
+    )
+    layout.add_argument(
+        "--square-layout",
+        action="store_true",
+        help="try TB and LR layouts and use the one closest to square",
+    )
+    parser.add_argument(
+        "--pad-square",
+        action="store_true",
+        help="cosmetic: pad diagrams to a square transparent canvas",
     )
     args = parser.parse_args(argv)
 
@@ -280,7 +382,13 @@ def main(argv: list[str] | None = None) -> int:
                 Path(temp_dir),
                 need_svg=args.export_diagrams,
                 direction=args.diagram_direction,
+                square_layout=args.square_layout,
             )
+            if args.pad_square:
+                diagrams = {
+                    token: make_square(diagram, Path(temp_dir), index)
+                    for index, (token, diagram) in enumerate(diagrams.items())
+                }
             html_body = markdown_to_html(prepared_markdown, diagrams)
             html_document = build_html(html_body, input_path.stem)
             HTML(
