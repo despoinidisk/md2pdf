@@ -14,6 +14,14 @@ same name and a `.pdf` extension, unless another path is given.
 `--export-diagrams` also saves each rendered diagram as both PNG and SVG in
 `path/to/report-diagrams/` (next to the PDF).
 
+Diagrams are scaled down if needed to fit the page height. For tall flowcharts,
+`--diagram-direction LR` lays them out left-to-right for a shorter, wider
+footprint (less downscaling in the PDF):
+
+```sh
+./md2pdf path/to/report.md --diagram-direction LR
+```
+
 ## Install
 
 One-line install (downloads the CLI and installs Python/npm dependencies):

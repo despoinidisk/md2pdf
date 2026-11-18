@@ -16,6 +16,14 @@ from pathlib import Path
 import markdown
 from weasyprint import HTML
 
+FLOWCHART_HEADER = re.compile(
+    r"^([ \t]*)(graph|flowchart)(?:[ \t]+(?:TD|TB|BT|RL))?[ \t]*$",
+    re.MULTILINE,
+)
+FLOWCHART_DIRECTION = re.compile(
+    r"^([ \t]*)direction[ \t]+(?:TD|TB|BT|RL)\b", re.MULTILINE
+)
+
 MERMAID_FENCE = re.compile(
     r"^(?P<fence>`{3,}|~{3,})[ \t]*mermaid[^\n]*\n"
     r"(?P<diagram>.*?)"
@@ -85,12 +93,36 @@ th, td {
 th { background: #f4f4f4; }
 img { max-width: 100%; }
 figure.mermaid {
-    margin: 1.5em 0;
+    margin: 1em 0;
     text-align: center;
     page-break-inside: avoid;
+    break-inside: avoid;
 }
-figure.mermaid img { max-width: 100%; }
+figure.mermaid img {
+    max-width: 100%;
+    /* Keep tall diagrams inside the A4 content box (297mm - 2 * 25mm). */
+    max-height: 230mm;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
 """
+
+
+def apply_direction(diagram: str, direction: str) -> str:
+    """Optionally lay flowcharts out left-to-right for a shorter footprint."""
+    if direction == "TB":
+        return diagram
+    diagram = FLOWCHART_HEADER.sub(
+        lambda match: f"{match.group(1)}{match.group(2)} {direction}",
+        diagram,
+        count=1,
+    )
+    return FLOWCHART_DIRECTION.sub(
+        lambda match: f"{match.group(1)}direction {direction}",
+        diagram,
+        count=1,
+    )
 
 
 def run_mmdc(
@@ -116,7 +148,10 @@ def run_mmdc(
 
 
 def render_mermaid(
-    markdown_text: str, work_dir: Path, need_svg: bool = False
+    markdown_text: str,
+    work_dir: Path,
+    need_svg: bool = False,
+    direction: str = "TB",
 ) -> tuple[str, dict[str, RenderedDiagram]]:
     """Render Mermaid fences to PNG (and optionally SVG), replacing them with tokens."""
     blocks = list(MERMAID_FENCE.finditer(markdown_text))
@@ -137,7 +172,9 @@ def render_mermaid(
     for index, block in enumerate(blocks):
         source = work_dir / f"diagram-{index}.mmd"
         png = work_dir / f"diagram-{index}.png"
-        source.write_text(block.group("diagram"), encoding="utf-8")
+        source.write_text(
+            apply_direction(block.group("diagram"), direction), encoding="utf-8"
+        )
 
         run_mmdc(mmdc, source, png, index + 1, scale=2)
         svg = work_dir / f"diagram-{index}.svg" if need_svg else None
@@ -218,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also save diagrams to <pdf-name>-diagrams/ beside the PDF",
     )
+    parser.add_argument(
+        "--diagram-direction",
+        choices=["TB", "LR"],
+        default="TB",
+        help="flowchart layout (LR makes tall diagrams shorter and wider)",
+    )
     args = parser.parse_args(argv)
 
     input_path = args.input
@@ -233,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
         markdown_text = input_path.read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory(prefix="md2pdf-") as temp_dir:
             prepared_markdown, diagrams = render_mermaid(
-                markdown_text, Path(temp_dir), need_svg=args.export_diagrams
+                markdown_text,
+                Path(temp_dir),
+                need_svg=args.export_diagrams,
+                direction=args.diagram_direction,
             )
             html_body = markdown_to_html(prepared_markdown, diagrams)
             html_document = build_html(html_body, input_path.stem)
