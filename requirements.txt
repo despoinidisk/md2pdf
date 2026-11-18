@@ -1,0 +1,5 @@
+markdown
+weasyprint
+
+# Mermaid diagrams require mermaid-cli (Node.js):
+# npm install -g @mermaid-js/mermaid-cli

@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Convert a Markdown file to PDF, rendering Mermaid diagrams when present."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from html import escape
+from pathlib import Path
+
+import markdown
+from weasyprint import HTML
+
+MERMAID_FENCE = re.compile(
+    r"^(?P<fence>`{3,}|~{3,})[ \t]*mermaid[^\n]*\n"
+    r"(?P<diagram>.*?)"
+    r"^(?P=fence)[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+CSS = """
+@page {
+    size: A4;
+    margin: 2.5cm;
+    @bottom-center {
+        content: counter(page);
+        font-size: 9pt;
+        color: #888;
+    }
+}
+body {
+    font-family: 'Liberation Sans', 'Arial', 'Helvetica', sans-serif;
+    font-size: 11pt;
+    line-height: 1.6;
+    color: #333;
+}
+h1, h2 {
+    color: #111;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 0.3em;
+}
+h3, h4, h5, h6 { color: #222; }
+a { color: #0645ad; }
+code {
+    background: #f4f4f4;
+    padding: 2px 4px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.9em;
+}
+pre {
+    background: #f4f4f4;
+    padding: 1em;
+    border-radius: 5px;
+    white-space: pre-wrap;
+    page-break-inside: avoid;
+}
+pre code { padding: 0; background: none; }
+blockquote {
+    margin-left: 0;
+    padding-left: 1em;
+    border-left: 4px solid #ddd;
+    color: #555;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 6px 8px;
+    text-align: left;
+}
+th { background: #f4f4f4; }
+img { max-width: 100%; }
+figure.mermaid {
+    margin: 1.5em 0;
+    text-align: center;
+    page-break-inside: avoid;
+}
+figure.mermaid img { max-width: 100%; }
+"""
+
+
+def render_mermaid(markdown_text: str, work_dir: Path) -> tuple[str, dict[str, Path]]:
+    """Render Mermaid fences to PNGs, replacing them with placeholder tokens."""
+    blocks = list(MERMAID_FENCE.finditer(markdown_text))
+    if not blocks:
+        return markdown_text, {}
+
+    mmdc = shutil.which("mmdc")
+    if mmdc is None:
+        raise RuntimeError(
+            "Mermaid diagrams found, but 'mmdc' (mermaid-cli) is not installed. "
+            "Install it with: npm install -g @mermaid-js/mermaid-cli"
+        )
+
+    images: dict[str, Path] = {}
+    parts: list[str] = []
+    end = 0
+
+    for index, block in enumerate(blocks):
+        source = work_dir / f"diagram-{index}.mmd"
+        destination = work_dir / f"diagram-{index}.png"
+        source.write_text(block.group("diagram"), encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                mmdc,
+                "-i", str(source),
+                "-o", str(destination),
+                "-b", "transparent",
+                "-s", "2",
+                "-q",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not destination.exists():
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"could not render Mermaid diagram {index + 1}: {detail}")
+
+        token = f"MD2PDFMERMAID{index}TOKEN"
+        parts.append(markdown_text[end:block.start()])
+        parts.append(f"\n\n{token}\n\n")
+        images[token] = destination
+        end = block.end()
+
+    parts.append(markdown_text[end:])
+    return "".join(parts), images
+
+
+def markdown_to_html(markdown_text: str, images: dict[str, Path]) -> str:
+    """Convert Markdown to an HTML fragment and insert rendered diagrams."""
+    html_body = markdown.markdown(
+        markdown_text,
+        extensions=["tables", "fenced_code", "sane_lists"],
+    )
+    for token, image in images.items():
+        figure = (
+            '<figure class="mermaid">'
+            f'<img src="{escape(image.as_uri(), quote=True)}" alt="Mermaid diagram">'
+            "</figure>"
+        )
+        html_body = html_body.replace(f"<p>{token}</p>", figure).replace(token, figure)
+    return html_body
+
+
+def build_html(html_body: str, title: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{escape(title)}</title>
+    <style>{CSS}</style>
+</head>
+<body>
+{html_body}
+</body>
+</html>
+"""
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Convert a Markdown file to PDF (Mermaid diagrams supported)."
+    )
+    parser.add_argument("input", type=Path, help="Markdown file to convert")
+    parser.add_argument(
+        "-o", "--output",
+        type=Path,
+        help="PDF path (default: input path with a .pdf extension)",
+    )
+    args = parser.parse_args(argv)
+
+    input_path = args.input
+    if not input_path.is_file():
+        parser.error(f"input file not found: {input_path}")
+
+    output_path = args.output or input_path.with_suffix(".pdf")
+    if output_path.resolve() == input_path.resolve():
+        parser.error("output path must differ from input path")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        markdown_text = input_path.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="md2pdf-") as temp_dir:
+            prepared_markdown, images = render_mermaid(markdown_text, Path(temp_dir))
+            html_body = markdown_to_html(prepared_markdown, images)
+            html_document = build_html(html_body, input_path.stem)
+            HTML(
+                string=html_document,
+                base_url=str(input_path.absolute().parent),
+            ).write_pdf(str(output_path))
+    except Exception as exc:
+        print(f"md2pdf: error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"PDF written to {output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
